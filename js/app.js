@@ -588,7 +588,7 @@
       return;
     }
     if (Speech.getState() === "playing") { Speech.stop(); return; }
-    var plan = Speech.buildPlan({ lines: q.lines, question: q.question || null }, settings);
+    var plan = Speech.buildPlan({ lines: q.lines, question: q.question || null, key: q.id }, settings);
     Speech.play(plan, settings.rate);
   }
 
@@ -694,7 +694,7 @@
     }
     var sel = h("select", { id: id }, [
       (function () {
-        var o = h("option", { value: "auto", text: "自動（おすすめ順）" });
+        var o = h("option", { value: "auto", text: "自動（おすすめからランダム）" });
         if (current === "auto") o.selected = true;
         return o;
       })()
@@ -753,7 +753,7 @@
       var count = Speech.englishVoices().length;
       inner.appendChild(h("p", { class: "dlg-note", text: count === 0
         ? "英語の音声が見つかりません。読み込み中の可能性があります。数秒待つか、ページを再読み込みしてください。"
-        : "この端末で使える英語の音声：" + count + " 件。会話では、話者の性別に合わせて声が自動で選ばれます。" }));
+        : "この端末で使える英語の音声：" + count + " 件。「自動」のときは、問題ごとに、おすすめの声から話者の性別に合う声がランダムに選ばれます（同じ問題の中では同じ声）。同性の2人には別の声を割り当てます。" }));
     }
 
     inner.appendChild(h("button", { class: "btn btn-primary btn-block dlg-close", type: "button", onclick: closeSettings }, "閉じる"));
