@@ -228,7 +228,12 @@
       entering = false;
       if (!client) return;
       entered = true;
-      window.ListenUpApp.start({ email: email || "", onLogout: logout });
+      window.ListenUpApp.start({
+        email: email || "",
+        userId: session && session.user && session.user.id,
+        client: client,
+        onLogout: logout
+      });
     }, function () {
       entering = false;
       renderNotice("問題データを読み込めませんでした", [

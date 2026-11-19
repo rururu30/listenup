@@ -3,7 +3,8 @@
  *
  * 問題データは data/questions.js（window.LISTENING_DATA）から読み込む。
  * 音声は js/speech.js（window.Speech）が担当する。
- * この段階（S1）では、回答の記録は画面を開いている間だけ保持し、保存はしない。
+ * 回答の記録は Supabase の answers テーブルに保存する（SUPABASE_ANSWERS.sql 参照）。
+ * 保存に失敗しても、画面を開いている間は回答を保持して動き続ける。
  */
 (function () {
   "use strict";
@@ -34,6 +35,11 @@
   var session = null;          // ログイン中の情報 { email, onLogout }
   var active = false;          // ログイン後に start() されたときだけ true
   var listenersReady = false;
+  var store = null;            // 保存先 { client, userId }
+  var weekKey = "";            // 週ごとに回答を分けるための鍵（weekLabel）
+  var loading = false;         // 保存済みの回答を読み込み中か
+  var syncError = false;       // 保存・読み込みに失敗したか
+  var loadId = 0;              // 古い読み込み結果を捨てるための番号
 
   /* ================= 小さな道具 ================= */
 
@@ -204,6 +210,74 @@
     return s;
   }
 
+  /* ================= 回答の保存（Supabase） ================= */
+
+  function setSyncError(v) {
+    if (syncError === v) return;
+    syncError = v;
+    if (active) render({ keepScroll: true });
+  }
+
+  function watch(p) {
+    p.then(function (res) {
+      setSyncError(!!(res && res.error));
+    }, function () { setSyncError(true); });
+  }
+
+  // 1問ぶんの回答を保存する。未回答に戻っているときは記録を削除する。
+  function persist(dayKey, qid) {
+    if (!store) return;
+    var rec = peekRec(dayKey, qid);
+    var t = store.client.from("answers");
+    if (!rec || (rec.choice === null && !rec.revealed)) {
+      watch(t.delete().eq("user_id", store.userId).eq("week", weekKey).eq("question_id", qid));
+    } else {
+      watch(t.upsert({
+        user_id: store.userId,
+        week: weekKey,
+        question_id: qid,
+        choice: rec.choice,
+        revealed: rec.revealed
+      }, { onConflict: "user_id,week,question_id" }));
+    }
+  }
+
+  function persistDayReset(day) {
+    if (!store) return;
+    var ids = day.flat.map(function (it) { return it.q.id; });
+    watch(store.client.from("answers").delete()
+      .eq("user_id", store.userId).eq("week", weekKey).in("question_id", ids));
+  }
+
+  // 保存済みの回答を読み込んで answers に入れる
+  function loadSaved(myId) {
+    var qidToDay = {};
+    Object.keys(dataInfo.days).forEach(function (dk) {
+      dataInfo.days[dk].flat.forEach(function (it) { qidToDay[it.q.id] = dk; });
+    });
+    var done = function (rows, failed) {
+      if (myId !== loadId || !active) return;
+      (rows || []).forEach(function (r) {
+        var dk = qidToDay[r.question_id];
+        if (!dk) return;
+        if (!answers[dk]) answers[dk] = {};
+        answers[dk][r.question_id] = {
+          choice: typeof r.choice === "number" ? r.choice : null,
+          revealed: r.revealed === true
+        };
+      });
+      syncError = failed;
+      loading = false;
+      render();
+    };
+    store.client.from("answers").select("question_id,choice,revealed")
+      .eq("user_id", store.userId).eq("week", weekKey)
+      .then(function (res) {
+        if (res && res.error) done(null, true);
+        else done(res && res.data, false);
+      }, function () { done(null, true); });
+  }
+
   function firstUndone(dayKey, day) {
     for (var i = 0; i < day.flat.length; i++) {
       var r = peekRec(dayKey, day.flat[i].q.id);
@@ -231,7 +305,12 @@
     var r = parseRoute();
     var node = null;
 
-    if (dataInfo.errors.length) {
+    if (loading) {
+      node = h("div", { class: "page" }, [
+        h("h1", { class: "hero-title", tabindex: "-1", "data-focus": "", text: "ListenUp" }),
+        h("p", { class: "hero-sub", role: "status", text: "回答の記録を読み込んでいます…" })
+      ]);
+    } else if (dataInfo.errors.length) {
       node = renderDataError();
     } else if (r.name === "question") {
       node = renderQuestion(r.day, r.n);
@@ -268,6 +347,11 @@
       ]),
       h("p", { class: "home-note", text: "形式の説明は data/DATA_FORMAT.md にあります。" })
     ]);
+  }
+
+  function syncNotice() {
+    return h("div", { class: "notice is-error", role: "alert", text:
+      "回答の記録を保存・読み込みできませんでした。画面を閉じると記録が消えます。通信状況と、Supabaseの answers テーブルの設定（SUPABASE_ANSWERS.sql）をご確認ください。" });
   }
 
   function renderHome() {
@@ -336,6 +420,7 @@
       page.appendChild(h("div", { class: "notice is-error", role: "alert", text:
         "このブラウザは音声の読み上げに対応していません。Chrome や Safari の最新版でお試しください。" }));
     }
+    if (syncError) page.appendChild(syncNotice());
     if (anyDummy) {
       page.appendChild(h("div", { class: "notice", text:
         "いまは動作確認用の仮データです。本番の問題データに差し替えると、この表示は消えます。" }));
@@ -525,6 +610,7 @@
           h("h1", { class: "topbar-title", tabindex: "-1", "data-focus": "", text: day.def.ja + (day.isDummy ? "（仮）" : "") }),
           h("button", { class: "btn-ghost", type: "button", onclick: openSettings, "aria-label": "音声の設定" }, "⚙ 設定")
         ]),
+        syncError ? syncNotice() : null,
         buildProgress(dayKey, day, n),
         card
       ]),
@@ -538,6 +624,7 @@
     var rec = getRec(dayKey, it.q.id);
     if (rec.choice !== null || rec.revealed) return;
     rec.choice = i;
+    persist(dayKey, it.q.id);
     var ok = i === it.q.answer;
     render({ keepScroll: true });
     announce(ok ? "正解です。" : "不正解です。正解は " + LETTERS[it.q.answer] + " です。");
@@ -550,12 +637,14 @@
   function reveal(dayKey, q) {
     var rec = getRec(dayKey, q.id);
     rec.revealed = true;
+    persist(dayKey, q.id);
     render({ keepScroll: true });
     announce("答えと英文、日本語訳を表示しました。");
   }
 
   function retry(dayKey, q) {
     if (answers[dayKey]) delete answers[dayKey][q.id];
+    persist(dayKey, q.id);
     render({ keepScroll: true });
     announce("この問題をやり直せます。");
   }
@@ -643,7 +732,7 @@
     }
     actions.appendChild(h("button", {
       class: "btn btn-secondary btn-block", type: "button",
-      onclick: function () { delete answers[dayKey]; location.hash = "#/day/" + dayKey + "/1"; }
+      onclick: function () { delete answers[dayKey]; persistDayReset(day); location.hash = "#/day/" + dayKey + "/1"; }
     }, "この日をもう一度やる"));
     actions.appendChild(h("a", { class: "btn btn-quiet btn-block", href: "#/" }, "曜日選択へ"));
 
@@ -810,13 +899,28 @@
     answers = {};
     lastAudioError = null;
     dataInfo = validateData(window.LISTENING_DATA);
+    weekKey = dataInfo.weekLabel || "default";
+    store = (info && info.client && info.userId) ? { client: info.client, userId: info.userId } : null;
+    syncError = false;
+    loadId += 1;
     active = true;
-    render();
+    if (store && !dataInfo.errors.length) {
+      loading = true;
+      render();
+      loadSaved(loadId);
+    } else {
+      loading = false;
+      render();
+    }
   }
 
   // ログアウト時・ログイン切れ時に呼ばれる。画面と回答の記録をすべて消す。
   function stop() {
     active = false;
+    loadId += 1;
+    loading = false;
+    syncError = false;
+    store = null;
     if (Speech) Speech.stop();
     answers = {};
     lastAudioError = null;
