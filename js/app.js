@@ -783,7 +783,7 @@
     }
     var sel = h("select", { id: id }, [
       (function () {
-        var o = h("option", { value: "auto", text: "自動（おすすめからランダム）" });
+        var o = h("option", { value: "auto", text: "自動（おすすめ・ランダム）" });
         if (current === "auto") o.selected = true;
         return o;
       })()
